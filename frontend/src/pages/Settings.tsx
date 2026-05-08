@@ -326,11 +326,12 @@ const LAZYLLM_SOURCES = [
   { value: 'kimi', label: 'Kimi' },
 ];
 
-// 所有可用的提供商选项（Gemini/OpenAI/Codex + LazyLLM 厂商）
+// 所有可用的提供商选项（Gemini/OpenAI/Codex/Vertex + LazyLLM 厂商）
 const ALL_PROVIDER_SOURCES = [
   { value: 'gemini', label: 'Gemini' },
   { value: 'openai', label: 'OpenAI' },
   { value: 'codex', label: 'Codex (OpenAI OAuth)' },
+  { value: 'vertex', label: 'Vertex AI' },
   ...LAZYLLM_SOURCES.filter(s => s.value !== 'openai'), // avoid duplicate 'openai'
 ];
 
