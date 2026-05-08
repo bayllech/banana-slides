@@ -266,6 +266,18 @@ def _get_model_type_provider_config(model_type: str) -> Dict[str, Any]:
         logger.info("Per-model config — %s: anthropic, api_base: %s", model_type, api_base)
         return {'format': 'anthropic', 'api_key': api_key, 'api_base': api_base}
 
+    elif source_lower == 'vertex':
+        project_id = _resolve_setting('VERTEX_PROJECT_ID')
+        location = _resolve_setting('VERTEX_LOCATION', 'us-central1')
+        if not project_id:
+            raise ValueError(
+                f"VERTEX_PROJECT_ID must be set when {model_type} model source is vertex. "
+                "Make sure GOOGLE_APPLICATION_CREDENTIALS points to a valid service-account JSON."
+            )
+        logger.info("Per-model config — %s: vertex, project: %s, location: %s",
+                     model_type, project_id, location)
+        return {'format': 'vertex', 'project_id': project_id, 'location': location}
+
     else:
         # Assume it's a LazyLLM vendor name
         logger.info("Per-model config — %s: lazyllm, source: %s", model_type, source_lower)

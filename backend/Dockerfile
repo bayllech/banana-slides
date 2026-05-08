@@ -60,6 +60,9 @@ COPY backend/ ./backend/
 # 复制测试资源
 COPY assets/ ./assets/
 
+# 复制脚本
+COPY scripts/ ./scripts/
+
 # 创建必要的目录
 RUN mkdir -p /app/backend/instance /app/uploads
 

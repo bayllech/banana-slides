@@ -763,8 +763,12 @@ class ExportService:
                 logger.warning(f"提取文字样式失败 [{element_id}]: {e}")
                 return element_id, None
         
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {executor.submit(extract_single, item): item[0] for item in text_items}
+        import time
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            futures = {}
+            for item in text_items:
+                futures[executor.submit(extract_single, item)] = item[0]
+                time.sleep(0.1)  # 短暂延迟，防止瞬间爆发几十个网络请求导致代理连接断开(SSLEOFError)
             
             for future in as_completed(futures):
                 element_id, style = future.result()
@@ -989,8 +993,21 @@ class ExportService:
         global_results = {}  # 全局识别结果
         local_results = {}   # 单个裁剪识别结果
         
+        # 限流器：确保单个识别请求不要太快，避免触发 429 (针对 10-15 RPM 限制)
+        import threading
+        import time
+        request_lock = threading.Lock()
+        last_request_time = [0.0]
+        MIN_INTERVAL = 6.2  # 两次请求之间至少间隔 6.2 秒（即最高不到 10 RPM，彻底避开默认限额）
+        
         def extract_global_for_page(page_idx, page_data):
             """全局识别单页"""
+            with request_lock:
+                now = time.time()
+                elapsed = now - last_request_time[0]
+                if elapsed < MIN_INTERVAL:
+                    time.sleep(MIN_INTERVAL - elapsed)
+                last_request_time[0] = time.time()
             try:
                 results = text_attribute_extractor.extract_batch_with_full_image(
                     full_image=page_data['image_path'],
@@ -1006,6 +1023,13 @@ class ExportService:
         
         def extract_local_single(item):
             """单个裁剪识别"""
+            with request_lock:
+                now = time.time()
+                elapsed = now - last_request_time[0]
+                if elapsed < MIN_INTERVAL:
+                    time.sleep(MIN_INTERVAL - elapsed)
+                last_request_time[0] = time.time()
+                
             element_id, image_path, text_content = item
             try:
                 style = text_attribute_extractor.extract(
@@ -1019,40 +1043,29 @@ class ExportService:
                     return element_id, style, None
                 else:
                     error_msg = style.metadata.get('error', '样式提取返回空') if style else "样式提取返回空"
-                    if fail_fast:
-                        raise ExportService._build_style_extraction_error(
-                            error_msg,
-                            element_id=element_id,
-                            text_content=text_content
-                        )
                     return element_id, None, error_msg
             except ExportError:
                 raise  # 重新抛出 ExportError
             except Exception as e:
                 logger.warning(f"单个识别失败 [{element_id}]: {e}")
-                if fail_fast:
-                    raise ExportService._build_style_extraction_error(
-                        str(e),
-                        element_id=element_id,
-                        text_content=text_content
-                    )
                 return element_id, None, str(e)
         
         # 并发执行全局识别和单个裁剪识别
         logger.info(f"  并发执行: 全局识别 {len(page_text_elements)} 页 + 单个识别 {len(all_text_items)} 个元素...")
         
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        import time
+        with ThreadPoolExecutor(max_workers=1) as executor:
             # 提交全局识别任务
-            global_futures = {
-                executor.submit(extract_global_for_page, idx, data): ('global', idx)
-                for idx, data in page_text_elements.items()
-            }
+            global_futures = {}
+            for idx, data in page_text_elements.items():
+                global_futures[executor.submit(extract_global_for_page, idx, data)] = ('global', idx)
+                time.sleep(0.1)
             
             # 提交单个裁剪识别任务
-            local_futures = {
-                executor.submit(extract_local_single, item): ('local', item[0])
-                for item in all_text_items
-            }
+            local_futures = {}
+            for item in all_text_items:
+                local_futures[executor.submit(extract_local_single, item)] = ('local', item[0])
+                time.sleep(0.1)
             
             # 收集全局识别结果
             for future in as_completed(global_futures):
@@ -1065,23 +1078,15 @@ class ExportService:
                     }
                     missing_element_ids = expected_element_ids - set(page_results.keys())
                     if page_error:
-                        if fail_fast:
-                            raise ExportService._build_style_extraction_error(page_error, page_idx=page_idx)
                         failed_extractions.extend(
                             (element_id, f"全局识别失败: {page_error}")
                             for element_id in expected_element_ids
                         )
                     elif missing_element_ids:
                         reason = "全局识别未返回完整结果"
-                        if fail_fast:
-                            raise ExportService._build_style_extraction_error(reason, page_idx=page_idx)
                         failed_extractions.extend((element_id, reason) for element_id in missing_element_ids)
                 except Exception as e:
                     logger.error(f"全局识别任务失败: {e}")
-                    if fail_fast:
-                        if isinstance(e, ExportError):
-                            raise
-                        raise ExportService._build_style_extraction_error(str(e), page_idx=page_idx) from e
                     expected_element_ids = [
                         element['element_id'] for element in page_text_elements[page_idx]['elements']
                     ]
