@@ -102,3 +102,103 @@ BAIDU_API_KEY=your-baidu-api-key
 ## 运行时设置覆盖
 
 以上所有配置也可通过网页设置页面进行配置。通过设置页面配置的参数会存储在数据库中，优先级高于 `.env`。点击"还原默认设置"可恢复为 `.env` 中的值。
+
+## 外部 API/服务依赖清单（用于替换 Gemini 前评估）
+
+如果你计划替换 Gemini，建议先区分“模型生成链路”和“其他外部服务链路”：
+
+- **模型生成链路（可直接替换）**
+  - 文本生成：由 `TEXT_MODEL` + provider 决定。
+  - 图片生成：由 `IMAGE_MODEL` + provider 决定。
+  - 图片理解/描述（caption）：由 `IMAGE_CAPTION_MODEL` + provider 决定。
+
+- **其他外部服务链路（与 Gemini 独立）**
+  - **MinerU**：用于 PDF/Office 解析（参考文件上传提取）。
+  - **百度 OCR**：用于可编辑导出时的文本/表格识别增强。
+  - **ElevenLabs（可选）**：用于高质量配音；不配置时默认使用 edge-tts。
+
+### 推荐替换顺序（低风险）
+
+1. 先替换 `TEXT_MODEL_SOURCE`（只影响文案/大纲）。
+2. 再替换 `IMAGE_CAPTION_MODEL_SOURCE`（影响文件解析后的图片描述、视觉理解）。
+3. 最后替换 `IMAGE_MODEL_SOURCE`（影响生图质量、比例与分辨率兼容性）。
+
+这样可以在不改变全局 `AI_PROVIDER_FORMAT` 的前提下，逐步验证并快速回滚。
+
+
+### 使用第三方中转站替换这三条链路（详细步骤）
+
+下面以 **OpenAI 兼容中转协议** 为例（大多数中转站都提供这种格式）：
+
+#### 步骤 1：先切到 OpenAI 兼容格式
+
+```env
+AI_PROVIDER_FORMAT=openai
+OPENAI_API_KEY=your-relay-key
+OPENAI_API_BASE=https://your-relay-domain/v1
+```
+
+> 说明：
+> - `OPENAI_API_BASE` 必须带 `/v1`（若你的中转站文档要求其他路径，以文档为准）。
+> - 若你此前填了 `GOOGLE_API_KEY`，不必立刻删除；但生产建议只保留当前使用的 key，避免混淆。
+
+#### 步骤 2：按模型类型分别替换（你当前最需要）
+
+在不改其它链路的情况下，直接使用三组“按模型类型覆盖”配置：
+
+```env
+# 文本链路（大纲、文案等）
+TEXT_MODEL_SOURCE=openai
+TEXT_API_KEY=your-relay-key
+TEXT_API_BASE=https://your-relay-domain/v1
+TEXT_MODEL=gpt-4.1-mini
+
+# 图片理解/描述链路（caption）
+IMAGE_CAPTION_MODEL_SOURCE=openai
+IMAGE_CAPTION_API_KEY=your-relay-key
+IMAGE_CAPTION_API_BASE=https://your-relay-domain/v1
+IMAGE_CAPTION_MODEL=gpt-4.1-mini
+
+# 图片生成链路
+IMAGE_MODEL_SOURCE=openai
+IMAGE_API_KEY=your-relay-key
+IMAGE_API_BASE=https://your-relay-domain/v1
+IMAGE_MODEL=gpt-image-2
+```
+
+> 说明：
+> - 三条链路可以用同一个 key/base，也可以拆成不同中转站（例如文本一个、生图一个）。
+> - `*_API_KEY/*_API_BASE` 优先级高于全局 `OPENAI_API_KEY/OPENAI_API_BASE`，适合灰度迁移。
+
+#### 步骤 3：在网页设置页做最小化验证
+
+建议按顺序做：
+
+1. 先只改 `TEXT_MODEL_SOURCE`，测试：主题 → 大纲/文案是否正常返回。  
+2. 再改 `IMAGE_CAPTION_MODEL_SOURCE`，测试：上传参考文件后，图片描述是否正常生成。  
+3. 最后改 `IMAGE_MODEL_SOURCE`，测试：16:9/9:16 各生图一次，确认比例、清晰度、速度。
+
+若你中途失败，直接把对应 `*_MODEL_SOURCE` 设回 `gemini`（或删除该项）即可单链路回滚。
+
+#### 步骤 4：常见报错与排查
+
+- **401/鉴权失败**：检查 key 是否填在对应链路的 `*_API_KEY`（不是只填全局）。
+- **404/model not found**：中转站不支持你填的模型名，改用中转站提供的精确 model id。
+- **图片链路失败但文本正常**：通常是中转站仅开通了文本模型，未开通图像模型。
+- **caption 失败**：确认 caption 使用的是“支持图文输入”的模型，而非纯文本模型。
+
+#### 步骤 5：稳定后再收敛配置
+
+当三条链路都跑通后，可将重复配置收敛为全局（可选）：
+
+```env
+AI_PROVIDER_FORMAT=openai
+OPENAI_API_KEY=your-relay-key
+OPENAI_API_BASE=https://your-relay-domain/v1
+
+TEXT_MODEL=...
+IMAGE_CAPTION_MODEL=...
+IMAGE_MODEL=...
+```
+
+如果你希望继续保留“按链路独立路由”能力（例如生图单独走另一家），就保留 `*_MODEL_SOURCE + *_API_*` 即可。
