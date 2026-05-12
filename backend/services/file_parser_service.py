@@ -58,6 +58,7 @@ class FileParserService:
                  lazyllm_image_caption_source: str = "", 
                  provider_format: str = None,
                  mineru_model_version: str = "vlm",
+                 enable_image_captions: bool = True,
                  ):
         """
         Initialize the file parser service
@@ -73,6 +74,7 @@ class FileParserService:
             lazyllm_image_caption_source: image caption model provider for lazyllm
             provider_format: AI provider format ('gemini' or 'openai'). If not provided, reads from environment variable.
             mineru_model_version: MinerU model version ('vlm' or 'pipeline'). Default is 'vlm'.
+            enable_image_captions: Whether to enrich markdown images with generated captions.
         """
         self.mineru_token = mineru_token
         self.mineru_api_base = mineru_api_base
@@ -83,6 +85,7 @@ class FileParserService:
         self._image_caption_model = image_caption_model
         self._provider_format = _get_ai_provider_format(provider_format)
         self._caption_provider = None
+        self._enable_image_captions = enable_image_captions
     
     def _get_caption_provider(self):
         """Lazily initialize caption provider via the provider factory"""
@@ -155,7 +158,7 @@ class FileParserService:
             logger.info("File parsed successfully.")
             
             # Step 4: Enhance markdown with image captions
-            if markdown_content and self._can_generate_captions():
+            if markdown_content and self._enable_image_captions and self._can_generate_captions():
                 logger.info("Step 4/4: Enhancing markdown with image captions...")
                 enhanced_content, failed_count = self._enhance_markdown_with_captions(markdown_content)
                 if failed_count > 0:
@@ -164,7 +167,10 @@ class FileParserService:
                     logger.info("Markdown enhanced with image captions (all images succeeded).")
                 return batch_id, enhanced_content, extract_id, None, failed_count
             else:
-                logger.info("Skipping image caption enhancement (caption model unavailable).")
+                if not self._enable_image_captions:
+                    logger.info("Skipping image caption enhancement (disabled for this parser).")
+                else:
+                    logger.info("Skipping image caption enhancement (caption model unavailable).")
                 return batch_id, markdown_content, extract_id, None, 0
             
         except Exception as e:
@@ -191,7 +197,7 @@ class FileParserService:
             logger.info(f"Text file read successfully: {len(content)} characters")
             
             # Enhance markdown with image captions if it contains images
-            if content and self._can_generate_captions():
+            if content and self._enable_image_captions and self._can_generate_captions():
                 # Check if content has markdown images
                 if '![' in content and '](' in content:
                     logger.info("Text file contains images, enhancing with captions...")
@@ -211,7 +217,7 @@ class FileParserService:
                     content = f.read()
                 logger.info(f"Text file read successfully with GBK encoding: {len(content)} characters")
                 
-                if content and self._can_generate_captions() and '![' in content and '](' in content:
+                if content and self._enable_image_captions and self._can_generate_captions() and '![' in content and '](' in content:
                     logger.info("Text file contains images, enhancing with captions...")
                     enhanced_content, failed_count = self._enhance_markdown_with_captions(content)
                     if failed_count > 0:

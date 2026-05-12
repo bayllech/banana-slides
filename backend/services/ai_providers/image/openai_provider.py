@@ -17,6 +17,7 @@ from io import BytesIO
 from typing import Optional, List
 from openai import OpenAI
 from PIL import Image
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 from .base import ImageProvider
 from config import get_config
 
@@ -47,6 +48,23 @@ _RESOLUTION_LONG_EDGE = {
     '2K': 2048,
     '4K': 3840,
 }
+
+
+def _is_retryable_openai_image_error(exc: BaseException) -> bool:
+    """判断 OpenAI/代理图片接口的临时错误。"""
+    message = str(exc).lower()
+    status = getattr(exc, 'status_code', None)
+    return (
+        status in {429, 500, 502, 503, 504}
+        or 'rate limit' in message
+        or '429' in message
+        or '500' in message
+        or '502' in message
+        or '503' in message
+        or '504' in message
+        or 'upstream' in message
+        or 'terminal response event' in message
+    )
 
 
 def _compute_gpt_image_size(aspect_ratio: str, resolution: str = '2K') -> str:
@@ -205,6 +223,33 @@ class OpenAIImageProvider(ImageProvider):
             return None          # dall-e-2 has no quality param
         return 'auto'            # gpt-image-* accepts auto / low / medium / high
 
+    @retry(
+        stop=stop_after_attempt(5),
+        wait=wait_exponential(multiplier=3, min=3, max=45),
+        retry=retry_if_exception(_is_retryable_openai_image_error),
+        reraise=True,
+    )
+    def _images_edit_with_retry(self, **kwargs):
+        return self.client.images.edit(**kwargs)
+
+    @retry(
+        stop=stop_after_attempt(5),
+        wait=wait_exponential(multiplier=3, min=3, max=45),
+        retry=retry_if_exception(_is_retryable_openai_image_error),
+        reraise=True,
+    )
+    def _images_generate_with_retry(self, **kwargs):
+        return self.client.images.generate(**kwargs)
+
+    @retry(
+        stop=stop_after_attempt(5),
+        wait=wait_exponential(multiplier=3, min=3, max=45),
+        retry=retry_if_exception(_is_retryable_openai_image_error),
+        reraise=True,
+    )
+    def _chat_completions_create_with_retry(self, **kwargs):
+        return self.client.chat.completions.create(**kwargs)
+
     def _decode_image_response(self, item) -> Image.Image:
         """Extract PIL Image from an images API response item (b64_json, url, or raw string)."""
         if isinstance(item, str):
@@ -303,7 +348,7 @@ class OpenAIImageProvider(ImageProvider):
                 kwargs['quality'] = quality
             if response_format:
                 kwargs['response_format'] = response_format
-            result = self.client.images.edit(**kwargs)
+            result = self._images_edit_with_retry(**kwargs)
         else:
             if ref_images:
                 logger.warning("dall-e-3 does not support images.edit; ignoring ref_images")
@@ -313,7 +358,7 @@ class OpenAIImageProvider(ImageProvider):
                 kwargs['quality'] = quality
             if response_format:
                 kwargs['response_format'] = response_format
-            result = self.client.images.generate(**kwargs)
+            result = self._images_generate_with_retry(**kwargs)
 
         return self._extract_from_images_result(result)
 
@@ -383,7 +428,7 @@ class OpenAIImageProvider(ImageProvider):
             logger.debug(f"Using extra_body: {extra_body}")
 
             # Use both system message (for basic providers) and extra_body (for advanced providers)
-            response = self.client.chat.completions.create(
+            response = self._chat_completions_create_with_retry(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": f"aspect_ratio={aspect_ratio}, resolution={resolution}"},

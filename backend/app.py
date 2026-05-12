@@ -43,9 +43,22 @@ def set_sqlite_pragma(dbapi_conn, connection_record):
 
     cursor = dbapi_conn.cursor()
     try:
-        cursor.execute("PRAGMA journal_mode=WAL")
-        cursor.execute("PRAGMA synchronous=NORMAL")
         cursor.execute("PRAGMA busy_timeout=60000")  # 60 seconds timeout
+
+        try:
+            current_mode = cursor.execute("PRAGMA journal_mode").fetchone()
+            journal_mode = (current_mode[0] if current_mode else "").lower()
+            if journal_mode != "wal":
+                cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+        except sqlite3.OperationalError as exc:
+            # Docker Desktop/macOS bind mounts can occasionally reject changing
+            # SQLite journal mode while another connection is active. This
+            # should not prevent the request worker from opening a connection.
+            logging.getLogger(__name__).warning(
+                "SQLite WAL setup failed; continuing with current journal mode: %s",
+                exc,
+            )
     finally:
         cursor.close()
 

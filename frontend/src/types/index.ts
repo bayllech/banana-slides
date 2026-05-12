@@ -97,7 +97,7 @@ export interface Project {
 }
 
 // 任务状态
-export type TaskStatus = 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED';
+export type TaskStatus = 'PENDING' | 'PROCESSING' | 'RUNNING' | 'COMPLETED' | 'FAILED';
 
 // 任务信息
 export interface Task {

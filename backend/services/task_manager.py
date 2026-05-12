@@ -1406,6 +1406,7 @@ def export_editable_pptx_with_recursive_analysis_task(
     export_extractor_method: str = 'hybrid',
     export_inpaint_method: str = 'hybrid',
     enable_icon_subject_extraction: bool = True,
+    extract_text_styles: bool = True,
     app=None
 ):
     """
@@ -1429,9 +1430,10 @@ def export_editable_pptx_with_recursive_analysis_task(
         max_workers: 并发处理数
         export_extractor_method: 组件提取方法 ('mineru' 或 'hybrid')
         export_inpaint_method: 背景修复方法 ('generative', 'baidu', 'hybrid')
+        extract_text_styles: 是否调用视觉模型提取文本样式；False 等价于 --no-text-styles
         app: Flask应用实例
     """
-    logger.info(f"🚀 Task {task_id} started: export_editable_pptx_with_recursive_analysis (project={project_id}, depth={max_depth}, workers={max_workers}, extractor={export_extractor_method}, inpaint={export_inpaint_method}, icon_subject_extraction={enable_icon_subject_extraction})")
+    logger.info(f"🚀 Task {task_id} started: export_editable_pptx_with_recursive_analysis (project={project_id}, depth={max_depth}, workers={max_workers}, extractor={export_extractor_method}, inpaint={export_inpaint_method}, icon_subject_extraction={enable_icon_subject_extraction}, extract_text_styles={extract_text_styles})")
     
     if app is None:
         raise ValueError("Flask app instance must be provided")
@@ -1479,6 +1481,7 @@ def export_editable_pptx_with_recursive_analysis_task(
             
             # 初始化任务进度（包含消息日志）
             task = Task.query.get(task_id)
+            task.status = 'PROCESSING'
             task.set_progress({
                 "total": 100,  # 使用百分比
                 "completed": 0,
@@ -1548,10 +1551,15 @@ def export_editable_pptx_with_recursive_analysis_task(
             logger.info(f"递归深度: {max_depth}, 并发数: {max_workers}")
             progress_callback("准备", f"幻灯片尺寸: {slide_width}×{slide_height}", 3)
             
-            # Step 2: 创建文字属性提取器
-            from services.image_editability import TextAttributeExtractorFactory
-            text_attribute_extractor = TextAttributeExtractorFactory.create_caption_model_extractor()
-            progress_callback("准备", "文字属性提取器已初始化", 5)
+            # Step 2: 按需创建文字属性提取器
+            text_attribute_extractor = None
+            if extract_text_styles:
+                from services.image_editability import TextAttributeExtractorFactory
+                text_attribute_extractor = TextAttributeExtractorFactory.create_caption_model_extractor()
+                progress_callback("准备", "文字属性提取器已初始化", 5)
+            else:
+                logger.info("已关闭文本样式提取（--no-text-styles）")
+                progress_callback("准备", "已关闭文本样式提取", 5)
             
             # Step 3: 调用导出方法（使用项目的导出设置）
             logger.info(f"Step 3: 创建可编辑PPTX (extractor={export_extractor_method}, inpaint={export_inpaint_method}, fail_fast={fail_fast})...")
@@ -1569,6 +1577,7 @@ def export_editable_pptx_with_recursive_analysis_task(
                 export_extractor_method=export_extractor_method,
                 export_inpaint_method=export_inpaint_method,
                 enable_icon_subject_extraction=enable_icon_subject_extraction,
+                extract_text_styles=extract_text_styles,
                 fail_fast=fail_fast
             )
             

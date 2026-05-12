@@ -1575,6 +1575,244 @@ def create_ppt_renovation_project():
         return error_response('SERVER_ERROR', str(e), 500)
 
 
+EDITABLE_PPTX_IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.webp', '.bmp', '.gif'}
+
+
+def _render_pdf_to_page_images(pdf_path: str, output_dir: Path, start_index: int = 1):
+    """把 PDF 渲染为页面图片，返回图片路径和第一页尺寸。"""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    page_paths = []
+    first_size = None
+
+    try:
+        import fitz  # PyMuPDF
+
+        doc = fitz.open(pdf_path)
+        if len(doc) > 0:
+            rect = doc[0].rect
+            first_size = (rect.width, rect.height)
+        for i, fitz_page in enumerate(doc):
+            mat = fitz.Matrix(2, 2)
+            pix = fitz_page.get_pixmap(matrix=mat)
+            img_path = output_dir / f"page_{start_index + i}_original.png"
+            pix.save(str(img_path))
+            page_paths.append(str(img_path))
+        doc.close()
+    except ImportError:
+        try:
+            from pdf2image import convert_from_path
+
+            images = convert_from_path(pdf_path, dpi=200)
+            for i, img in enumerate(images):
+                if first_size is None:
+                    first_size = img.size
+                img_path = output_dir / f"page_{start_index + i}_original.png"
+                img.save(img_path, 'PNG')
+                page_paths.append(str(img_path))
+        except ImportError:
+            raise ValueError("当前环境缺少 PyMuPDF 或 pdf2image，无法渲染 PDF")
+
+    return page_paths, first_size
+
+
+def _normalize_uploaded_image_to_png(source_path: Path, output_path: Path):
+    """把用户上传的图片规范化为 RGB PNG，避免透明通道影响 PPT 导出。"""
+    from PIL import Image as PILImage
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with PILImage.open(source_path) as img:
+        if img.mode in ('RGBA', 'LA') or ('transparency' in img.info):
+            rgba = img.convert('RGBA')
+            background = PILImage.new('RGB', rgba.size, (255, 255, 255))
+            background.paste(rgba, mask=rgba.split()[-1])
+            background.save(output_path, 'PNG')
+            return background.size
+
+        rgb = img.convert('RGB')
+        rgb.save(output_path, 'PNG')
+        return rgb.size
+
+
+@project_bp.route('/editable-pptx', methods=['POST'])
+def create_editable_pptx_project():
+    """
+    POST /api/projects/editable-pptx - 上传 PDF 或多张图片并转成可编辑 PPTX
+
+    Content-Type: multipart/form-data
+    Form:
+        files: PDF 或图片文件，可重复
+        filename: 输出 PPTX 文件名（可选）
+        max_depth: 递归分析深度（可选，默认 1）
+        max_workers: 并发数（可选，默认 4）
+        extract_text_styles: 是否生成文本样式（可选，默认 true；false 等价于 --no-text-styles）
+
+    Returns:
+        {project_id, task_id, page_count}
+    """
+    try:
+        uploaded_files = request.files.getlist('files')
+        if not uploaded_files and 'file' in request.files:
+            uploaded_files = [request.files['file']]
+
+        uploaded_files = [file for file in uploaded_files if file and file.filename]
+        if not uploaded_files:
+            return bad_request("请上传 PDF 或图片文件")
+
+        for uploaded_file in uploaded_files:
+            original_ext = Path(uploaded_file.filename).suffix.lower()
+            if original_ext != '.pdf' and original_ext not in EDITABLE_PPTX_IMAGE_EXTENSIONS:
+                return bad_request("仅支持 PDF 或 PNG/JPG/JPEG/WEBP/BMP/GIF 图片")
+
+        max_depth = int(request.form.get('max_depth', 1))
+        max_workers = int(request.form.get('max_workers', 4))
+        extract_text_styles_raw = request.form.get('extract_text_styles', 'true')
+        extract_text_styles = str(extract_text_styles_raw).strip().lower() not in ('0', 'false', 'no', 'off')
+        if max_depth < 1 or max_depth > 5:
+            return bad_request("max_depth must be between 1 and 5")
+        if max_workers < 1 or max_workers > 16:
+            return bad_request("max_workers must be between 1 and 16")
+
+        output_filename = request.form.get('filename', '').strip() or 'editable_presentation.pptx'
+        output_filename = secure_filename(output_filename) or 'editable_presentation.pptx'
+        if not output_filename.endswith('.pptx'):
+            output_filename += '.pptx'
+
+        project = Project(
+            creation_type='editable_import',
+            project_title='PDF/图片转可编辑 PPT',
+            status='PROCESSING',
+            export_allow_partial=False,
+            export_inpaint_method='hybrid',
+            enable_icon_subject_extraction=True,
+        )
+        db.session.add(project)
+        db.session.commit()
+
+        project_id = project.id
+        file_service = FileService(current_app.config['UPLOAD_FOLDER'])
+        project_dir = Path(current_app.config['UPLOAD_FOLDER']) / project_id
+        source_dir = project_dir / 'editable_sources'
+        pages_dir = project_dir / 'pages'
+        source_dir.mkdir(parents=True, exist_ok=True)
+        pages_dir.mkdir(parents=True, exist_ok=True)
+
+        page_image_paths = []
+        first_size = None
+
+        for file_index, uploaded_file in enumerate(uploaded_files, start=1):
+            original_ext = Path(uploaded_file.filename).suffix.lower()
+            if original_ext == '.pdf':
+                source_path = source_dir / f'source_{file_index}.pdf'
+                uploaded_file.save(str(source_path))
+                rendered_paths, pdf_first_size = _render_pdf_to_page_images(
+                    str(source_path),
+                    pages_dir,
+                    start_index=len(page_image_paths) + 1,
+                )
+                page_image_paths.extend(rendered_paths)
+                if first_size is None and pdf_first_size:
+                    first_size = pdf_first_size
+                continue
+
+            source_path = source_dir / f'source_{file_index}{original_ext}'
+            uploaded_file.save(str(source_path))
+            image_path = pages_dir / f"page_{len(page_image_paths) + 1}_original.png"
+            image_size = _normalize_uploaded_image_to_png(source_path, image_path)
+            page_image_paths.append(str(image_path))
+            if first_size is None:
+                first_size = image_size
+
+        if not page_image_paths:
+            raise ValueError("没有可转换的页面")
+
+        if first_size and first_size[0] > 0 and first_size[1] > 0:
+            try:
+                project.image_aspect_ratio = normalize_aspect_ratio(
+                    f"{int(round(first_size[0]))}:{int(round(first_size[1]))}"
+                )
+            except (ValueError, OverflowError) as e:
+                logger.warning(f"Could not normalize editable import aspect ratio {first_size}: {e}")
+
+        from services.task_manager import save_image_with_version, export_editable_pptx_with_recursive_analysis_task
+        from PIL import Image as PILImage
+
+        pages_list = []
+        for image_path in page_image_paths:
+            page = Page(
+                project_id=project_id,
+                order_index=len(pages_list),
+                status='DRAFT'
+            )
+            page.set_outline_content({
+                'title': f'Page {len(pages_list) + 1}',
+                'points': []
+            })
+            db.session.add(page)
+            db.session.flush()
+
+            with PILImage.open(image_path) as img:
+                save_image_with_version(
+                    img.copy(),
+                    project_id,
+                    page.id,
+                    file_service,
+                    page_obj=page,
+                )
+
+            pages_list.append(page)
+
+        task = Task(
+            project_id=project_id,
+            task_type='EXPORT_EDITABLE_PPTX',
+            status='PENDING'
+        )
+        task.set_progress({
+            'total': 100,
+            'completed': 0,
+            'failed': 0,
+            'current_step': '已接收文件，等待导出',
+            'percent': 0,
+            'messages': [f'已创建 {len(pages_list)} 页，准备导出可编辑 PPTX']
+        })
+        db.session.add(task)
+        db.session.commit()
+
+        app = current_app._get_current_object()
+        task_manager.submit_task(
+            task.id,
+            export_editable_pptx_with_recursive_analysis_task,
+            project_id=project_id,
+            filename=output_filename,
+            file_service=file_service,
+            max_depth=max_depth,
+            max_workers=max_workers,
+            export_extractor_method=project.export_extractor_method or 'hybrid',
+            export_inpaint_method=project.export_inpaint_method or 'hybrid',
+            enable_icon_subject_extraction=(
+                True if project.enable_icon_subject_extraction is None
+                else bool(project.enable_icon_subject_extraction)
+            ),
+            extract_text_styles=extract_text_styles,
+            app=app
+        )
+
+        return success_response({
+            'project_id': project_id,
+            'task_id': task.id,
+            'page_count': len(pages_list),
+            'filename': output_filename,
+        }, status_code=202)
+
+    except ValueError as e:
+        db.session.rollback()
+        logger.error(f"create_editable_pptx_project failed: {str(e)}", exc_info=True)
+        return error_response('BAD_REQUEST', str(e), 400)
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"create_editable_pptx_project failed: {str(e)}", exc_info=True)
+        return error_response('SERVER_ERROR', str(e), 500)
+
+
 # Style extraction blueprint (not bound to any project)
 style_bp = Blueprint('style', __name__, url_prefix='/api')
 

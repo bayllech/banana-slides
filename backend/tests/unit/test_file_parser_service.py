@@ -68,6 +68,30 @@ def test_can_generate_captions_returns_true_when_factory_succeeds():
         assert service._can_generate_captions() is True
 
 
+def test_parse_text_file_skips_caption_generation_when_disabled(tmp_path):
+    """禁用图片说明时，不应初始化 caption provider。"""
+    text_file = tmp_path / "demo.md"
+    text_file.write_text("![](/files/mineru/demo.png)", encoding="utf-8")
+
+    service = FileParserService(
+        mineru_token='test-token',
+        enable_image_captions=False,
+    )
+
+    with patch.object(service, '_get_caption_provider') as get_caption_provider:
+        batch_id, content, extract_id, error, failed_count = service._parse_text_file(
+            str(text_file),
+            text_file.name,
+        )
+
+    assert batch_id is None
+    assert content == "![](/files/mineru/demo.png)"
+    assert extract_id is None
+    assert error is None
+    assert failed_count == 0
+    get_caption_provider.assert_not_called()
+
+
 def test_generate_single_caption_vertex_uses_provider_factory():
     """Vertex provider should also go through the factory (the original bug)."""
     image_path = _create_temp_image()

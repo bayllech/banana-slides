@@ -710,14 +710,52 @@ export const exportImages = async (
 export const exportEditablePPTX = async (
   projectId: string,
   filename?: string,
-  pageIds?: string[]
+  pageIds?: string[],
+  options?: {
+    extractTextStyles?: boolean;
+  }
 ): Promise<ApiResponse<{ task_id: string }>> => {
   const response = await apiClient.post<
     ApiResponse<{ task_id: string }>
   >(`/api/projects/${projectId}/export/editable-pptx`, {
     filename,
-    page_ids: pageIds
+    page_ids: pageIds,
+    extract_text_styles: options?.extractTextStyles,
   });
+  return response.data;
+};
+
+/**
+ * 上传 PDF 或多张图片，直接转换为可编辑 PPTX（异步任务）
+ */
+export const createEditablePptxProject = async (
+  files: File[],
+  options?: {
+    filename?: string;
+    maxDepth?: number;
+    maxWorkers?: number;
+    extractTextStyles?: boolean;
+  }
+): Promise<ApiResponse<{ project_id: string; task_id: string; page_count: number; filename: string }>> => {
+  const formData = new FormData();
+  files.forEach((file) => formData.append('files', file));
+  if (options?.filename) {
+    formData.append('filename', options.filename);
+  }
+  if (options?.maxDepth) {
+    formData.append('max_depth', String(options.maxDepth));
+  }
+  if (options?.maxWorkers) {
+    formData.append('max_workers', String(options.maxWorkers));
+  }
+  if (options?.extractTextStyles !== undefined) {
+    formData.append('extract_text_styles', String(options.extractTextStyles));
+  }
+
+  const response = await apiClient.post<ApiResponse<{ project_id: string; task_id: string; page_count: number; filename: string }>>(
+    '/api/projects/editable-pptx',
+    formData
+  );
   return response.data;
 };
 

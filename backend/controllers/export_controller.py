@@ -313,7 +313,8 @@ def export_editable_pptx(project_id):
             "filename": "optional_custom_name.pptx",
             "page_ids": ["id1", "id2"],  // 可选，要导出的页面ID列表（不提供则导出所有）
             "max_depth": 1,      // 可选，递归深度（默认1=不递归，2=递归一层）
-            "max_workers": 4     // 可选，并发数（默认4）
+            "max_workers": 4,    // 可选，并发数（默认4）
+            "extract_text_styles": true // 可选，false 等价于 --no-text-styles
         }
     
     Returns:
@@ -362,6 +363,8 @@ def export_editable_pptx(project_id):
         # max_depth 语义：1=只处理表层不递归，2=递归一层（处理图片/图表中的子元素）
         max_depth = data.get('max_depth', 1)  # 默认不递归，与测试脚本一致
         max_workers = data.get('max_workers', 4)
+        extract_text_styles = data.get('extract_text_styles', True)
+        extract_text_styles = True if extract_text_styles is None else bool(extract_text_styles)
         
         # Validate parameters
         # max_depth >= 1: 至少处理表层元素
@@ -417,6 +420,7 @@ def export_editable_pptx(project_id):
             export_extractor_method=export_extractor_method,
             export_inpaint_method=export_inpaint_method,
             enable_icon_subject_extraction=enable_icon_subject_extraction,
+            extract_text_styles=extract_text_styles,
             app=app
         )
         

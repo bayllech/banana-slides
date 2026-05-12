@@ -65,3 +65,5 @@ _local_backup/
 
 # 本地 ML 模型（RMBG 等）
 /models/
+# CocoIndex Code (ccc)
+/.cocoindex_code/

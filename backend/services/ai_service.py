@@ -11,7 +11,7 @@ import requests
 from typing import List, Dict, Optional, Union
 from textwrap import dedent
 from PIL import Image
-from tenacity import retry, stop_after_attempt, retry_if_exception_type
+from tenacity import retry, stop_after_attempt, retry_if_exception_type, retry_if_exception, wait_exponential
 from .prompts import (
     get_outline_generation_prompt,
     get_outline_parsing_prompt,
@@ -34,6 +34,23 @@ from .ai_providers import get_text_provider, get_image_provider, get_caption_pro
 from config import get_config
 
 logger = logging.getLogger(__name__)
+
+
+def _is_retryable_ai_error(exc: BaseException) -> bool:
+    """判断是否为上游临时错误，适合指数退避后重试。"""
+    message = str(exc).lower()
+    status = getattr(exc, 'status_code', None)
+    return (
+        status in {429, 500, 502, 503, 504}
+        or 'rate limit' in message
+        or '429' in message
+        or '500' in message
+        or '502' in message
+        or '503' in message
+        or '504' in message
+        or 'upstream' in message
+        or 'terminal response event' in message
+    )
 
 
 class ProjectContext:
@@ -200,8 +217,12 @@ class AIService:
         return cleaned_text
     
     @retry(
-        stop=stop_after_attempt(3),
-        retry=retry_if_exception_type((json.JSONDecodeError, ValueError)),
+        stop=stop_after_attempt(5),
+        wait=wait_exponential(multiplier=2, min=2, max=30),
+        retry=retry_if_exception(
+            lambda exc: isinstance(exc, (json.JSONDecodeError, ValueError))
+            or _is_retryable_ai_error(exc)
+        ),
         reraise=True
     )
     def generate_json(self, prompt: str, thinking_budget: int = 1000) -> Union[Dict, List]:
@@ -232,8 +253,12 @@ class AIService:
             raise
     
     @retry(
-        stop=stop_after_attempt(3),
-        retry=retry_if_exception_type((json.JSONDecodeError, ValueError)),
+        stop=stop_after_attempt(5),
+        wait=wait_exponential(multiplier=2, min=2, max=30),
+        retry=retry_if_exception(
+            lambda exc: isinstance(exc, (json.JSONDecodeError, ValueError))
+            or _is_retryable_ai_error(exc)
+        ),
         reraise=True
     )
     def generate_json_with_image(self, prompt: str, image_path: str, thinking_budget: int = 1000) -> Union[Dict, List]:
@@ -1087,4 +1112,3 @@ class AIService:
     def extract_style_description(self, image_path: str) -> str:
         """从图片中提取风格描述"""
         return self._generate_text_from_image(get_style_extraction_prompt(), image_path)
-

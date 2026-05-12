@@ -1,23 +1,24 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Sparkles, FileText, FileEdit, ImagePlus, Paperclip, Palette, Lightbulb, Search, Settings, FolderOpen, HelpCircle, Sun, Moon, Globe, Monitor, ChevronDown, Upload, RefreshCw } from 'lucide-react';
+import { Sparkles, FileText, FileEdit, ImagePlus, Paperclip, Palette, Lightbulb, Search, Settings, FolderOpen, HelpCircle, Sun, Moon, Globe, Monitor, ChevronDown, Upload, RefreshCw, Image as ImageIcon, Download, CheckCircle, AlertTriangle } from 'lucide-react';
 import { Button, Card, useToast, MaterialGeneratorModal, MaterialCenterModal, MaterialSelector, ReferenceFileList, ReferenceFileSelector, FilePreviewModal, HelpModal, Footer, GithubRepoCard, TextStyleSelector } from '@/components/shared';
 import { MarkdownTextarea, type MarkdownTextareaRef } from '@/components/shared/MarkdownTextarea';
 import { TemplateSelector, getTemplateFile } from '@/components/shared/TemplateSelector';
-import { listUserTemplates, type UserTemplate, uploadReferenceFile, type ReferenceFile, associateFileToProject, triggerFileParse, associateMaterialsToProject, createPptRenovationProject } from '@/api/endpoints';
+import { listUserTemplates, type UserTemplate, uploadReferenceFile, type ReferenceFile, associateFileToProject, triggerFileParse, associateMaterialsToProject, createPptRenovationProject, createEditablePptxProject, getTaskStatus, type Material } from '@/api/endpoints';
 import { useProjectStore } from '@/store/useProjectStore';
 import { devLog } from '@/utils/logger';
 import { useTheme } from '@/hooks/useTheme';
 import { useImagePaste, buildMaterialsMarkdown } from '@/hooks/useImagePaste';
-import type { Material } from '@/types';
+import type { Task } from '@/types';
 import { useT } from '@/hooks/useT';
 import { ASPECT_RATIO_OPTIONS } from '@/config/aspectRatio';
 
-type CreationType = 'idea' | 'outline' | 'description' | 'ppt_renovation';
+type CreationType = 'idea' | 'outline' | 'description' | 'ppt_renovation' | 'editable_ppt';
 
 // 支持作为参考文件上传的文档扩展名（与后端 file_parser_service 保持一致）
 const ALLOWED_DOC_EXTENSIONS = ['pdf', 'docx', 'pptx', 'doc', 'ppt', 'xlsx', 'xls', 'csv', 'txt', 'md'];
+const EDITABLE_PPT_EXTENSIONS = ['pdf', 'png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif'];
 
 // 页面特有翻译 - AI 可以直接看到所有文案，保留原始 key 结构
 const homeI18n = {
@@ -45,12 +46,14 @@ const homeI18n = {
         outline: '从大纲生成',
         description: '从描述生成',
         ppt_renovation: 'PPT 翻新',
+        editable_ppt: '转可编辑PPT',
       },
       tabDescriptions: {
         idea: '输入你的想法，AI 将为你生成完整的 PPT',
         outline: '已有大纲？直接粘贴，AI 将自动切分为结构化大纲',
         description: '已有完整描述？AI 将自动解析并直接生成图片，跳过大纲步骤',
         ppt_renovation: '上传已有的 PDF/PPTX 文件，AI 将解析内容并重新生成翻新后的PPT',
+        editable_ppt: '上传 PDF 或多张图片，直接提取版面元素并导出可编辑 PPTX',
       },
       placeholders: {
         idea: '例如：生成一份关于 AI 发展史的演讲 PPT',
@@ -77,6 +80,20 @@ const homeI18n = {
         onlyPdfPptx: '仅支持 PDF 和 PPTX 文件',
         uploadFile: '请先上传 PDF 或 PPTX 文件',
       },
+      editablePpt: {
+        uploadHint: '点击或拖拽上传 PDF / 多张图片',
+        formatHint: '支持 PDF、PNG、JPG、WEBP、BMP、GIF；图片会按选择顺序生成页面',
+        onlyPdfImages: '仅支持 PDF 或图片文件',
+        uploadFile: '请先上传 PDF 或图片',
+        start: '开始转换',
+        converting: '转换中...',
+        ready: '可编辑 PPTX 已生成',
+        download: '下载 PPTX',
+        pages: '{{count}} 页',
+        clear: '清空',
+        textStyles: '生成文本样式',
+        textStylesDesc: '识别文字颜色、粗体、斜体、对齐等样式；关闭后等价于 --no-text-styles，转换更稳但文字样式会使用默认值。',
+      },
       messages: {
         enterContent: '请输入内容',
         filesParsing: '还有 {{count}} 个参考文件正在解析中，请等待解析完成',
@@ -95,6 +112,7 @@ const homeI18n = {
         serviceTestTip: '建议先到设置页底部进行服务测试，避免后续功能异常',
         verifying: '正在验证 API 配置...',
         verifyFailed: '请在设置页配置正确的 API Key，并在页面底部点击「服务测试」验证',
+        editablePptFailed: '可编辑 PPT 转换失败',
       },
     },
   },
@@ -122,12 +140,14 @@ const homeI18n = {
         outline: 'From Outline',
         description: 'From Description',
         ppt_renovation: 'PPT Renovation',
+        editable_ppt: 'Editable PPT',
       },
       tabDescriptions: {
         idea: 'Enter your idea, AI will generate a complete PPT for you',
         outline: 'Have an outline? Paste it directly, AI will split it into a structured outline',
         description: 'Have detailed descriptions? AI will parse and generate images directly, skipping the outline step',
         ppt_renovation: 'Upload an existing PDF/PPTX file, AI will parse its content and regenerate the renovated PPT',
+        editable_ppt: 'Upload a PDF or multiple images and export an editable PPTX directly',
       },
       placeholders: {
         idea: 'e.g., Generate a presentation about the history of AI',
@@ -154,6 +174,20 @@ const homeI18n = {
         onlyPdfPptx: 'Only PDF and PPTX files are supported',
         uploadFile: 'Please upload a PDF or PPTX file first',
       },
+      editablePpt: {
+        uploadHint: 'Click or drag to upload PDF / images',
+        formatHint: 'Supports PDF, PNG, JPG, WEBP, BMP, GIF. Images become slides in selection order.',
+        onlyPdfImages: 'Only PDF or image files are supported',
+        uploadFile: 'Please upload a PDF or image first',
+        start: 'Start Conversion',
+        converting: 'Converting...',
+        ready: 'Editable PPTX is ready',
+        download: 'Download PPTX',
+        pages: '{{count}} pages',
+        clear: 'Clear',
+        textStyles: 'Generate text styles',
+        textStylesDesc: 'Detect text color, bold, italic, alignment, and related styles. Turning this off is equivalent to --no-text-styles.',
+      },
       messages: {
         enterContent: 'Please enter content',
         filesParsing: '{{count}} reference file(s) are still parsing, please wait',
@@ -172,6 +206,7 @@ const homeI18n = {
         serviceTestTip: 'Test services in Settings first to avoid issues',
         verifying: 'Verifying API configuration...',
         verifyFailed: 'Please configure a valid API Key in Settings and click "Service Test" at the bottom to verify',
+        editablePptFailed: 'Editable PPT conversion failed',
       },
     },
   },
@@ -207,9 +242,26 @@ export const Home: React.FC = () => {
   const [isAspectRatioOpen, setIsAspectRatioOpen] = useState(false);
   const [renovationFile, setRenovationFile] = useState<File | null>(null);
   const [keepLayout, setKeepLayout] = useState(false);
+  const [editableFiles, setEditableFiles] = useState<File[]>([]);
+  const [editableTask, setEditableTask] = useState<{ projectId: string; taskId: string } | null>(null);
+  const [editableProgress, setEditableProgress] = useState<Task['progress'] | null>(null);
+  const [editableDownloadUrl, setEditableDownloadUrl] = useState('');
+  const [editableError, setEditableError] = useState('');
+  const [editableExtractTextStyles, setEditableExtractTextStyles] = useState(true);
   const renovationFileInputRef = useRef<HTMLInputElement>(null);
+  const editableFileInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const themeMenuRef = useRef<HTMLDivElement>(null);
+  const showRef = useRef(show);
+  const tRef = useRef(t);
+
+  useEffect(() => {
+    showRef.current = show;
+  }, [show]);
+
+  useEffect(() => {
+    tRef.current = t;
+  }, [t]);
 
   // 持久化草稿到 sessionStorage，确保跳转设置页后返回时内容不丢失
   useEffect(() => {
@@ -487,6 +539,100 @@ export const Home: React.FC = () => {
     e.target.value = '';
   };
 
+  const handleEditableFiles = useCallback((files: FileList | File[]) => {
+    const incoming = Array.from(files);
+    const accepted: File[] = [];
+    const rejected: string[] = [];
+
+    incoming.forEach((file) => {
+      const ext = file.name.split('.').pop()?.toLowerCase();
+      if (ext && EDITABLE_PPT_EXTENSIONS.includes(ext)) {
+        accepted.push(file);
+      } else {
+        rejected.push(ext || file.type || file.name);
+      }
+    });
+
+    if (rejected.length > 0) {
+      show({
+        message: t('home.editablePpt.onlyPdfImages'),
+        type: 'error',
+      });
+    }
+
+    if (accepted.length > 0) {
+      setEditableFiles(prev => [...prev, ...accepted]);
+      setEditableDownloadUrl('');
+      setEditableError('');
+      setEditableProgress(null);
+    }
+  }, [show, t]);
+
+  const removeEditableFile = useCallback((index: number) => {
+    setEditableFiles(prev => prev.filter((_, itemIndex) => itemIndex !== index));
+  }, []);
+
+  const clearEditableFiles = useCallback(() => {
+    setEditableFiles([]);
+    setEditableTask(null);
+    setEditableProgress(null);
+    setEditableDownloadUrl('');
+    setEditableError('');
+  }, []);
+
+  useEffect(() => {
+    if (!editableTask) return;
+
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const poll = async () => {
+      try {
+        const response = await getTaskStatus(editableTask.projectId, editableTask.taskId);
+        if (cancelled) return;
+
+        const task = response.data;
+        if (!task) return;
+
+        setEditableProgress(task.progress || null);
+
+        if (task.status === 'COMPLETED') {
+          const progress = (task.progress || {}) as Record<string, any>;
+          const downloadUrl = progress.download_url;
+          if (downloadUrl) {
+            setEditableDownloadUrl(downloadUrl);
+          }
+          setEditableTask(null);
+          showRef.current({ message: tRef.current('home.editablePpt.ready'), type: 'success' });
+          return;
+        }
+
+        if (task.status === 'FAILED') {
+          const message = task.error_message || task.error || tRef.current('home.messages.editablePptFailed');
+          setEditableError(message);
+          setEditableTask(null);
+          showRef.current({ message, type: 'error' });
+          return;
+        }
+
+        timer = setTimeout(poll, 2000);
+      } catch (error: any) {
+        if (cancelled) return;
+        const message = error?.response?.data?.error?.message || error.message || tRef.current('home.messages.editablePptFailed');
+        setEditableError(message);
+        setEditableTask(null);
+        showRef.current({ message, type: 'error' });
+      }
+    };
+
+    poll();
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [editableTask]);
+
   const tabConfig = {
     idea: {
       icon: <Sparkles size={20} />,
@@ -514,6 +660,13 @@ export const Home: React.FC = () => {
       label: t('home.tabs.ppt_renovation'),
       placeholder: '',
       description: t('home.tabDescriptions.ppt_renovation'),
+      example: null as string | null,
+    },
+    editable_ppt: {
+      icon: <ImageIcon size={20} />,
+      label: t('home.tabs.editable_ppt'),
+      placeholder: '',
+      description: t('home.tabDescriptions.editable_ppt'),
       example: null as string | null,
     },
   };
@@ -548,8 +701,55 @@ export const Home: React.FC = () => {
 
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  const handleEditableConvert = async () => {
+    if (editableFiles.length === 0) {
+      show({ message: t('home.editablePpt.uploadFile'), type: 'error' });
+      return;
+    }
+
+    setIsSubmitting(true);
+    setEditableError('');
+    setEditableDownloadUrl('');
+    setEditableProgress({
+      total: 100,
+      completed: 0,
+      failed: 0,
+      percent: 0,
+      current_step: t('home.editablePpt.converting'),
+    });
+
+    try {
+      const response = await createEditablePptxProject(editableFiles, {
+        filename: 'editable_presentation.pptx',
+        maxDepth: 1,
+        maxWorkers: 4,
+        extractTextStyles: editableExtractTextStyles,
+      });
+      const projectId = response.data?.project_id;
+      const taskId = response.data?.task_id;
+      if (!projectId || !taskId) {
+        throw new Error(t('home.messages.editablePptFailed'));
+      }
+
+      setEditableTask({ projectId, taskId });
+      localStorage.setItem('currentProjectId', projectId);
+    } catch (error: any) {
+      const message = error?.response?.data?.error?.message || error.message || t('home.messages.editablePptFailed');
+      setEditableError(message);
+      setEditableProgress(null);
+      show({ message, type: 'error' });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   const handleSubmit = async () => {
     // For ppt_renovation, validate file instead of content
+    if (activeTab === 'editable_ppt') {
+      await handleEditableConvert();
+      return;
+    }
+
     if (activeTab === 'ppt_renovation') {
       if (!renovationFile) {
         show({ message: t('home.renovation.uploadFile'), type: 'error' });
@@ -1021,6 +1221,143 @@ export const Home: React.FC = () => {
                   </Button>
                 </div>
               </div>
+            ) : activeTab === 'editable_ppt' ? (
+              <div className="space-y-4">
+                <div
+                  className="border-2 border-dashed border-gray-300 dark:border-border-primary rounded-xl p-6 md:p-8 text-center cursor-pointer hover:border-banana-400 dark:hover:border-banana transition-colors duration-200"
+                  onClick={() => editableFileInputRef.current?.click()}
+                  onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    handleEditableFiles(e.dataTransfer.files);
+                  }}
+                >
+                  <div className="space-y-3">
+                    <Upload size={32} className="mx-auto text-gray-400 dark:text-foreground-tertiary" />
+                    <p className="text-sm text-gray-600 dark:text-foreground-secondary">{t('home.editablePpt.uploadHint')}</p>
+                    <p className="text-xs text-gray-400 dark:text-foreground-tertiary">{t('home.editablePpt.formatHint')}</p>
+                  </div>
+                </div>
+                <input
+                  ref={editableFileInputRef}
+                  type="file"
+                  accept=".pdf,.png,.jpg,.jpeg,.webp,.bmp,.gif,image/*,application/pdf"
+                  multiple
+                  onChange={(e) => {
+                    if (e.target.files) {
+                      handleEditableFiles(e.target.files);
+                    }
+                    e.target.value = '';
+                  }}
+                  className="hidden"
+                />
+
+                {editableFiles.length > 0 && (
+                  <div className="rounded-xl border border-gray-200 dark:border-border-primary bg-white/70 dark:bg-background-elevated overflow-hidden">
+                    <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-border-primary">
+                      <span className="text-sm font-medium text-gray-700 dark:text-foreground-secondary">
+                        {t('home.editablePpt.pages', { count: editableFiles.length })}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={clearEditableFiles}
+                        className="text-xs text-gray-500 hover:text-red-500 transition-colors"
+                      >
+                        {t('home.editablePpt.clear')}
+                      </button>
+                    </div>
+                    <div className="divide-y divide-gray-100 dark:divide-border-primary max-h-52 overflow-y-auto">
+                      {editableFiles.map((file, index) => (
+                        <div key={`${file.name}-${index}`} className="flex items-center gap-3 px-4 py-3">
+                          <FileText size={18} className="text-banana-600 dark:text-banana flex-shrink-0" />
+                          <div className="min-w-0 flex-1 text-left">
+                            <p className="text-sm font-medium text-gray-900 dark:text-white truncate">{file.name}</p>
+                            <p className="text-xs text-gray-500 dark:text-foreground-tertiary">{(file.size / 1024 / 1024).toFixed(1)} MB</p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => removeEditableFile(index)}
+                            className="text-gray-400 hover:text-red-500 transition-colors"
+                            aria-label="remove file"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <label className="flex items-start gap-3 rounded-xl border border-gray-200 dark:border-border-primary bg-white/70 dark:bg-background-elevated px-4 py-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={editableExtractTextStyles}
+                    onChange={(e) => setEditableExtractTextStyles(e.target.checked)}
+                    disabled={Boolean(editableTask) || isSubmitting}
+                    className="w-4 h-4 mt-0.5 rounded border-gray-300 text-banana-500 focus:ring-banana-500"
+                  />
+                  <span className="flex-1 min-w-0 text-left">
+                    <span className="block text-sm font-medium text-gray-800 dark:text-foreground-secondary">
+                      {t('home.editablePpt.textStyles')}
+                    </span>
+                    <span className="block text-xs text-gray-500 dark:text-foreground-tertiary mt-1 leading-relaxed">
+                      {t('home.editablePpt.textStylesDesc')}
+                    </span>
+                  </span>
+                </label>
+
+                {(editableProgress || editableError || editableDownloadUrl) && (
+                  <div className="rounded-xl border border-gray-200 dark:border-border-primary bg-white/70 dark:bg-background-elevated p-4 space-y-3">
+                    <div className="flex items-center gap-2">
+                      {editableDownloadUrl ? (
+                        <CheckCircle size={18} className="text-green-600 dark:text-green-400" />
+                      ) : editableError ? (
+                        <AlertTriangle size={18} className="text-red-500" />
+                      ) : (
+                        <RefreshCw size={18} className="text-banana-600 dark:text-banana animate-spin" />
+                      )}
+                      <span className="text-sm font-medium text-gray-800 dark:text-foreground-secondary">
+                        {editableDownloadUrl
+                          ? t('home.editablePpt.ready')
+                          : editableError || editableProgress?.current_step || t('home.editablePpt.converting')}
+                      </span>
+                    </div>
+                    {!editableDownloadUrl && !editableError && (
+                      <div className="h-2 rounded-full bg-gray-200 dark:bg-background-hover overflow-hidden">
+                        <div
+                          className="h-full bg-banana-500 dark:bg-banana transition-all"
+                          style={{ width: `${editableProgress?.percent || editableProgress?.completed || 0}%` }}
+                        />
+                      </div>
+                    )}
+                    {editableDownloadUrl && (
+                      <a
+                        href={editableDownloadUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-banana-500 hover:bg-banana-600 text-black text-sm font-medium transition-colors"
+                      >
+                        <Download size={16} />
+                        {t('home.editablePpt.download')}
+                      </a>
+                    )}
+                  </div>
+                )}
+
+                <div className="flex justify-end">
+                  <Button
+                    size="sm"
+                    icon={<Download size={16} />}
+                    onClick={handleEditableConvert}
+                    loading={isSubmitting || Boolean(editableTask)}
+                    disabled={editableFiles.length === 0 || Boolean(editableTask)}
+                    className="shadow-sm dark:shadow-background-primary/30 text-xs md:text-sm px-3 md:px-4"
+                  >
+                    {editableTask ? t('home.editablePpt.converting') : t('home.editablePpt.start')}
+                  </Button>
+                </div>
+              </div>
             ) : (
             <MarkdownTextarea
               ref={textareaRef}
@@ -1104,17 +1441,20 @@ export const Home: React.FC = () => {
             className="hidden"
           />
 
-          <ReferenceFileList
-            files={referenceFiles}
-            onFileClick={setPreviewFileId}
-            onFileDelete={handleFileRemove}
-            onFileStatusChange={handleFileStatusChange}
-            deleteMode="remove"
-            className="mb-4"
-            showToast={show}
-          />
+          {activeTab !== 'editable_ppt' && (
+            <ReferenceFileList
+              files={referenceFiles}
+              onFileClick={setPreviewFileId}
+              onFileDelete={handleFileRemove}
+              onFileStatusChange={handleFileStatusChange}
+              deleteMode="remove"
+              className="mb-4"
+              showToast={show}
+            />
+          )}
 
           {/* 模板选择 */}
+          {activeTab !== 'editable_ppt' && (
           <div className="mb-6 md:mb-8 pt-4 border-t border-gray-100 dark:border-border-primary">
             <div className="flex items-center justify-between mb-3 md:mb-4">
               <div className="flex items-center gap-2">
@@ -1166,6 +1506,7 @@ export const Home: React.FC = () => {
               />
             )}
           </div>
+          )}
 
         </Card>
       </main>

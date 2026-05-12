@@ -1156,6 +1156,7 @@ class ExportService:
         export_extractor_method: str = 'hybrid',  # 组件提取方法: mineru, hybrid
         export_inpaint_method: str = 'hybrid',  # 背景修复方法: generative, baidu, hybrid
         enable_icon_subject_extraction: bool = False,  # 是否对小尺寸图标走百度智能抠图
+        extract_text_styles: bool = True,  # 是否提取文本颜色、粗体、斜体等样式
         fail_fast: bool = True  # 是否在遇到错误时立即停止（False则收集警告继续）
     ) -> Tuple[Optional[bytes], ExportWarnings]:
         """
@@ -1181,6 +1182,7 @@ class ExportService:
                 可通过 TextAttributeExtractorFactory.create_caption_model_extractor() 创建
             export_extractor_method: 组件提取方法 ('mineru' 或 'hybrid'，默认 'hybrid')
             export_inpaint_method: 背景修复方法 ('generative', 'baidu', 'hybrid'，默认 'hybrid')
+            extract_text_styles: 是否调用视觉模型提取文字样式。False 等价于命令行 --no-text-styles。
             fail_fast: 是否在遇到错误时立即停止（默认 True）。设为 False 则收集警告继续导出。
 
         Returns:
@@ -1259,7 +1261,7 @@ class ExportService:
         # 2.5. 使用混合策略提取所有文本元素的样式（如果提供了提取器）
         # 混合策略：全局识别（粗体/斜体/下划线/对齐）+ 单个裁剪识别（颜色）
         text_styles_cache = {}
-        if text_attribute_extractor:
+        if extract_text_styles and text_attribute_extractor:
             report_progress("样式提取", "开始提取文本样式（混合策略）...", 45)
             
             # 统计文本元素数量
@@ -1270,10 +1272,11 @@ class ExportService:
             
             if total_text_count > 0:
                 report_progress("样式提取", f"混合策略分析 {total_text_count} 个文本元素...", 50)
+                text_style_workers = max(1, min(4, max_workers))
                 text_styles_cache, failed_extractions = ExportService._batch_extract_text_styles_hybrid(
                     editable_images=editable_images,
                     text_attribute_extractor=text_attribute_extractor,
-                    max_workers=max_workers * 2,
+                    max_workers=text_style_workers,
                     fail_fast=fail_fast
                 )
                 
@@ -1288,6 +1291,9 @@ class ExportService:
                     logger.warning(f"样式提取: {failed_count}/{total_text_count} 个元素失败")
                 
                 report_progress("样式提取", f"✓ 完成 {extracted_count}/{total_text_count} 个文本样式提取（{failed_count} 个失败）", 70)
+        elif not extract_text_styles:
+            logger.info("跳过文本样式提取（--no-text-styles）")
+            report_progress("样式提取", "已跳过文本样式提取", 70)
         
         report_progress("构建PPTX", "开始构建可编辑PPTX文件...", 75)
         
